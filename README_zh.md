@@ -1,5 +1,7 @@
 # Hermes Mobile 📱
 
+[English](README.md) | **中文**
+
 > 将 [Hermes Agent](https://github.com/nicholasgasior/nicholasgasior.github.io.git) 完美移植到 Android 移动端 — 一个会自动记忆、自动创建 Skill 的 AI 助手。
 
 ```

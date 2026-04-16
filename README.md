@@ -1,8 +1,8 @@
 # Hermes Mobile 📱
 
-> Porting [Hermes Agent](https://github.com/nicholasgasior/nicholasgasior.github.io.git) to Android — an AI assistant that auto-remembers, auto-creates Skills, and runs anywhere.
+**English** | [中文](README_zh.md)
 
-[中文文档](README_zh.md)
+> Porting [Hermes Agent](https://github.com/nicholasgasior/nicholasgasior.github.io.git) to Android — an AI assistant that auto-remembers, auto-creates Skills, and runs anywhere.
 
 ```
 ┌─────────────────────────────────────────────────────┐
