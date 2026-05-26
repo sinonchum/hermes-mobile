@@ -20,10 +20,12 @@ class MainActivity : FlutterActivity() {
         private const val BOOTSTRAP_CHANNEL = "com.hermes.mobile/bootstrap"
         private const val CONFIG_CHANNEL = "com.hermes.mobile/config"
         private const val LOG_CHANNEL = "com.hermes.mobile/logs"
+        private const val STREAM_CHANNEL = "com.hermes.mobile/stream"
     }
 
     private var logSink: EventChannel.EventSink? = null
     private var logReceiver: BroadcastReceiver? = null
+    private var streamSink: EventChannel.EventSink? = null
 
     override fun configureFlutterEngine(@NonNull flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -97,6 +99,82 @@ class MainActivity : FlutterActivity() {
                                 runOnUiThread { result.error("HTTP_FAILED", e.message, null) }
                             }
                         }.start()
+                    }
+                    "httpPostStream" -> {
+                        val url = call.argument<String>("url") ?: ""
+                        val body = call.argument<String>("body") ?: ""
+                        val headers = call.argument<String>("headers") ?: ""
+                        val contentType = call.argument<String>("contentType") ?: "application/json"
+                        Thread {
+                            try {
+                                val conn = java.net.URL(url).openConnection() as java.net.HttpURLConnection
+                                conn.requestMethod = "POST"
+                                conn.setRequestProperty("Content-Type", contentType)
+                                conn.setRequestProperty("User-Agent", "HermesMobile/1.0")
+                                conn.setRequestProperty("Accept", "text/event-stream")
+                                conn.connectTimeout = 30000
+                                conn.readTimeout = 60000
+                                conn.instanceFollowRedirects = true
+
+                                if (headers.isNotEmpty()) {
+                                    headers.split("\n").forEach { h ->
+                                        val parts = h.split(":", limit = 2)
+                                        if (parts.size == 2) {
+                                            conn.setRequestProperty(parts[0].trim(), parts[1].trim())
+                                        }
+                                    }
+                                }
+
+                                conn.doOutput = true
+                                if (body.isNotEmpty()) {
+                                    conn.outputStream.use { it.write(body.toByteArray()) }
+                                }
+
+                                val responseCode = conn.responseCode
+                                if (responseCode !in 200..299) {
+                                    val errorText = conn.errorStream?.bufferedReader()?.readText() ?: "HTTP $responseCode"
+                                    conn.disconnect()
+                                    runOnUiThread {
+                                        streamSink?.error("HTTP_ERROR", errorText, null)
+                                        streamSink?.endOfStream()
+                                    }
+                                    return@Thread
+                                }
+
+                                // Read SSE stream line by line
+                                val reader = conn.inputStream.bufferedReader()
+                                var line: String?
+                                while (reader.readLine().also { line = it } != null) {
+                                    val l = line ?: continue
+                                    if (l.startsWith("data: ")) {
+                                        val data = l.substring(6).trim()
+                                        if (data == "[DONE]") {
+                                            break
+                                        }
+                                        runOnUiThread {
+                                            streamSink?.success(mapOf(
+                                                "type" to "data",
+                                                "data" to data
+                                            ))
+                                        }
+                                    }
+                                }
+
+                                conn.disconnect()
+                                runOnUiThread {
+                                    streamSink?.success(mapOf("type" to "done"))
+                                    streamSink?.endOfStream()
+                                    streamSink = null
+                                }
+                            } catch (e: Exception) {
+                                runOnUiThread {
+                                    streamSink?.error("STREAM_ERROR", e.message, null)
+                                    streamSink?.endOfStream()
+                                    streamSink = null
+                                }
+                            }
+                        }.start()
+                        result.success(true)
                     }
                     "httpGet" -> {
                         val url = call.argument<String>("url") ?: ""
@@ -245,7 +323,6 @@ class MainActivity : FlutterActivity() {
                         val key = call.argument<String>("key") ?: ""
                         val value = call.argument<String>("value") ?: ""
                         prefs.edit().putString(key, value).apply()
-                        // Also write to .env file in Termux home
                         updateEnvFile(key, value)
                         result.success(true)
                     }
@@ -276,7 +353,6 @@ class MainActivity : FlutterActivity() {
             .setStreamHandler(object : EventChannel.StreamHandler {
                 override fun onListen(arguments: Any?, events: EventChannel.EventSink?) {
                     logSink = events
-                    // Register broadcast receiver for bridge logs
                     logReceiver = object : BroadcastReceiver() {
                         override fun onReceive(ctx: Context?, intent: Intent?) {
                             val msg = intent?.getStringExtra("message") ?: ""
@@ -292,9 +368,20 @@ class MainActivity : FlutterActivity() {
                     }
                 }
                 override fun onCancel(arguments: Any?) {
-                    logReceiver?.let { unregisterReceiver(it) }
+                    logReceiver?.let { try { unregisterReceiver(it) } catch (_: Exception) {} }
                     logReceiver = null
                     logSink = null
+                }
+            })
+
+        // ── SSE Stream Channel ─────────────────────────────
+        EventChannel(flutterEngine.dartExecutor.binaryMessenger, STREAM_CHANNEL)
+            .setStreamHandler(object : EventChannel.StreamHandler {
+                override fun onListen(arguments: Any?, events: EventChannel.EventSink?) {
+                    streamSink = events
+                }
+                override fun onCancel(arguments: Any?) {
+                    streamSink = null
                 }
             })
     }
@@ -307,7 +394,6 @@ class MainActivity : FlutterActivity() {
 
             val lines = if (envFile.exists()) envFile.readLines().toMutableList() else mutableListOf()
 
-            // Update or add the key
             var found = false
             for (i in lines.indices) {
                 if (lines[i].startsWith("$key=") || lines[i].startsWith("# $key=")) {

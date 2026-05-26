@@ -97,7 +97,6 @@ When asked what model you are, answer that you are running on $modelName.''';
   /// Initialize: load API key from saved config.
   Future<void> initialize() async {
     try {
-      // Check local LLM first
       final localUrl = await PlatformService.getApiKey('local_llm_url');
       if (localUrl != null && localUrl.isNotEmpty) {
         _localLlmUrl = localUrl;
@@ -107,7 +106,6 @@ When asked what model you are, answer that you are running on $modelName.''';
         return;
       }
 
-      // Fall back to cloud API
       final apiKey = await PlatformService.getApiKey('nous_api_key');
       final model = await PlatformService.getModel();
       if (apiKey != null && apiKey.isNotEmpty) {
@@ -125,14 +123,12 @@ When asked what model you are, answer that you are running on $modelName.''';
 
   // ── Session Management ──
 
-  /// Start a new session.
   Future<void> startNewSession({String? title}) async {
     _currentSessionId = await MessageRepository.createSession(title: title);
     _messages.clear();
     notifyListeners();
   }
 
-  /// Load an existing session.
   Future<void> loadSession(String sessionId) async {
     _currentSessionId = sessionId;
     _messages.clear();
@@ -140,12 +136,10 @@ When asked what model you are, answer that you are running on $modelName.''';
     notifyListeners();
   }
 
-  /// Get all sessions.
   Future<List<Map<String, dynamic>>> getSessions() async {
     return MessageRepository.getSessions();
   }
 
-  /// Delete a session.
   Future<void> deleteSession(String sessionId) async {
     await MessageRepository.deleteSession(sessionId);
     if (_currentSessionId == sessionId) {
@@ -155,7 +149,6 @@ When asked what model you are, answer that you are running on $modelName.''';
     }
   }
 
-  /// Configure local LLM mode
   Future<void> setLocalModel({required String url, String? model}) async {
     _localLlmUrl = url;
     _localLlmModel = model;
@@ -168,7 +161,6 @@ When asked what model you are, answer that you are running on $modelName.''';
     notifyListeners();
   }
 
-  /// Switch to cloud mode
   Future<void> clearLocalModel() async {
     _localLlmUrl = null;
     _localLlmModel = null;
@@ -177,14 +169,12 @@ When asked what model you are, answer that you are running on $modelName.''';
     await initialize();
   }
 
-  /// Change model at runtime
   void setModel(String model) {
     _model = model;
     PlatformService.setModel(model);
     notifyListeners();
   }
 
-  /// Change API key at runtime
   Future<void> setApiKey(String key) async {
     _apiKey = key;
     await PlatformService.setApiKey('nous_api_key', key);
@@ -192,12 +182,11 @@ When asked what model you are, answer that you are running on $modelName.''';
     notifyListeners();
   }
 
-  /// Send a user message and get response (with tool calling loop).
+  /// Send a user message and get response (with streaming + tool calling loop).
   void sendMessage(String text) {
     if (text.trim().isEmpty) return;
     if (!isConnected) return;
 
-    // Auto-create session if needed
     if (_currentSessionId == null) {
       startNewSession(title: text.trim().length > 50 ? '${text.trim().substring(0, 50)}...' : text.trim());
     }
@@ -208,13 +197,12 @@ When asked what model you are, answer that you are running on $modelName.''';
     _bridgeState = _bridgeState.copyWith(status: AgentStatus.thinking);
     notifyListeners();
 
-    // Persist user message
     MessageRepository.saveMessage(_currentSessionId!, userMsg);
 
     _runAgentLoop(text.trim());
   }
 
-  /// Agent loop: send message → handle tool calls → final response.
+  /// Agent loop: send message → stream response → handle tool calls → final response.
   Future<void> _runAgentLoop(String userContent) async {
     final messages = <Map<String, dynamic>>[
       {"role": "system", "content": _systemPrompt},
@@ -229,7 +217,7 @@ When asked what model you are, answer that you are running on $modelName.''';
 
     for (int iteration = 0; iteration < maxIterations; iteration++) {
       try {
-        final result = await _chatComplete(messages);
+        final result = await _chatCompleteStreaming(messages);
 
         if (result.containsKey('error')) {
           _addAssistantMessage('⚠️ ${result['error']}');
@@ -256,7 +244,7 @@ When asked what model you are, answer that you are running on $modelName.''';
             final funcName = tc['function']['name'] as String;
             final funcArgs = tc['function']['arguments'] as String;
 
-            final toolMsg = _addToolMessage(funcName, 'Running...', 'running');
+            _addToolMessage(funcName, 'Running...', 'running');
 
             final args = jsonDecode(funcArgs);
             final toolResult = await _executeTool(funcName, args);
@@ -289,8 +277,9 @@ When asked what model you are, answer that you are running on $modelName.''';
     notifyListeners();
   }
 
-  /// Call LLM API via PlatformService
-  Future<Map<String, dynamic>> _chatComplete(List<Map<String, dynamic>> messages) async {
+  /// Call LLM API with streaming support.
+  /// Falls back to non-streaming if streaming fails.
+  Future<Map<String, dynamic>> _chatCompleteStreaming(List<Map<String, dynamic>> messages) async {
     final model = isLocalMode ? (_localLlmModel ?? 'local') : _model;
     final apiUrl = isLocalMode
         ? '${_localLlmUrl}/chat/completions'
@@ -301,19 +290,151 @@ When asked what model you are, answer that you are running on $modelName.''';
       "messages": messages,
       "tools": _tools,
       "max_tokens": 4096,
+      "stream": true,
+    });
+
+    final authHeader = isLocalMode
+        ? 'Authorization: Bearer ***        : 'Authorization: Bearer *** ?? ''}';
+
+    try {
+      // Add a streaming assistant message
+      final streamingMsg = ChatMessage.assistant('', isStreaming: true);
+      _messages.add(streamingMsg);
+      notifyListeners();
+
+      String accumulatedContent = '';
+      Map<String, dynamic>? toolCallData;
+      final toolCallBuffers = <int, Map<String, dynamic>>{};
+
+      await for (final event in PlatformService.httpPostStream(
+        apiUrl,
+        headers: authHeader,
+        body: body,
+        contentType: 'application/json',
+      )) {
+        if (event['type'] == 'data') {
+          final dataStr = event['data'] as String;
+          try {
+            final chunk = jsonDecode(dataStr) as Map<String, dynamic>;
+            final choices = chunk['choices'] as List?;
+            if (choices != null && choices.isNotEmpty) {
+              final delta = choices[0]['delta'] as Map<String, dynamic>?;
+              if (delta != null) {
+                // Handle content delta
+                final content = delta['content'] as String?;
+                if (content != null) {
+                  accumulatedContent += content;
+                  // Update the streaming message
+                  final idx = _messages.lastIndexWhere((m) => m.isStreaming && m.role == 'assistant');
+                  if (idx >= 0) {
+                    _messages[idx] = _messages[idx].copyWith(content: accumulatedContent);
+                    notifyListeners();
+                  }
+                }
+
+                // Handle tool call deltas
+                final toolCallsDelta = delta['tool_calls'] as List?;
+                if (toolCallsDelta != null) {
+                  for (final tc in toolCallsDelta) {
+                    final index = tc['index'] as int;
+                    if (!toolCallBuffers.containsKey(index)) {
+                      toolCallBuffers[index] = {
+                        'id': tc['id'] as String? ?? '',
+                        'function': {'name': '', 'arguments': ''},
+                      };
+                    }
+                    final buffer = toolCallBuffers[index]!;
+                    if (tc['id'] != null) buffer['id'] = tc['id'];
+                    final func = tc['function'] as Map<String, dynamic>?;
+                    if (func != null) {
+                      if (func['name'] != null) {
+                        (buffer['function'] as Map<String, dynamic>)['name'] = func['name'];
+                      }
+                      if (func['arguments'] != null) {
+                        (buffer['function'] as Map<String, dynamic>)['arguments'] =
+                            ((buffer['function'] as Map<String, dynamic>)['arguments'] as String) +
+                            (func['arguments'] as String);
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          } catch (_) {
+            // Ignore parse errors in streaming chunks
+          }
+        } else if (event['type'] == 'done') {
+          break;
+        }
+      }
+
+      // Finalize the streaming message
+      final idx = _messages.lastIndexWhere((m) => m.isStreaming && m.role == 'assistant');
+      if (idx >= 0) {
+        _messages[idx] = _messages[idx].copyWith(isStreaming: false);
+      }
+
+      // If we got tool calls, return them in the expected format
+      if (toolCallBuffers.isNotEmpty) {
+        final toolCalls = toolCallBuffers.entries.toList()
+          ..sort((a, b) => a.key.compareTo(b.key));
+        return {
+          'choices': [
+            {
+              'message': {
+                'content': accumulatedContent,
+                'tool_calls': toolCalls.map((e) => {
+                  'id': e.value['id'],
+                  'function': e.value['function'],
+                }).toList(),
+              },
+            }
+          ],
+        };
+      }
+
+      // Regular content response
+      return {
+        'choices': [
+          {
+            'message': {
+              'content': accumulatedContent,
+            },
+          }
+        ],
+      };
+    } catch (e) {
+      // Fallback to non-streaming
+      debugPrint('Streaming failed, falling back to non-streaming: $e');
+
+      // Remove the failed streaming message
+      final idx = _messages.lastIndexWhere((m) => m.isStreaming);
+      if (idx >= 0) _messages.removeAt(idx);
+
+      return _chatCompleteNonStreaming(messages, apiUrl, authHeader);
+    }
+  }
+
+  /// Non-streaming fallback for LLM API call.
+  Future<Map<String, dynamic>> _chatCompleteNonStreaming(
+    List<Map<String, dynamic>> messages,
+    String apiUrl,
+    String authHeader,
+  ) async {
+    final body = jsonEncode({
+      "model": isLocalMode ? (_localLlmModel ?? 'local') : _model,
+      "messages": messages,
+      "tools": _tools,
+      "max_tokens": 4096,
     });
 
     try {
-      final authHeader = isLocalMode
-          ? 'Authorization: Bearer ***          : 'Authorization: Bearer *** ?? ''}';
-
       final result = await PlatformService.httpPost(
         apiUrl,
         headers: authHeader,
         body: body,
         contentType: 'application/json',
       );
-
       return jsonDecode(result) as Map<String, dynamic>;
     } catch (e) {
       return {'error': 'API call failed: $e'};

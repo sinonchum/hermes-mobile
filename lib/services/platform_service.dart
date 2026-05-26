@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/services.dart';
 
 /// Centralized platform channel service.
@@ -6,6 +7,7 @@ class PlatformService {
   static const _configChannel = MethodChannel('com.hermes.mobile/config');
   static const _bridgeChannel = MethodChannel('com.hermes.mobile/bridge');
   static const _bootstrapChannel = MethodChannel('com.hermes.mobile/bootstrap');
+  static const _streamChannel = EventChannel('com.hermes.mobile/stream');
 
   // ── Config (API keys, model) ──
 
@@ -54,6 +56,33 @@ class PlatformService {
       if (headers != null) 'headers': headers,
     });
     return result as String;
+  }
+
+  /// Start a streaming SSE POST request.
+  /// Returns a stream of data events. Each event is either:
+  /// - {'type': 'data', 'data': '<json string>'} — an SSE data chunk
+  /// - {'type': 'done'} — stream complete
+  static Stream<Map<String, dynamic>> httpPostStream(String url, {
+    String? headers,
+    String? body,
+    String? contentType,
+  }) async* {
+    // Start the stream on native side
+    await _bridgeChannel.invokeMethod('httpPostStream', {
+      'url': url,
+      if (headers != null) 'headers': headers,
+      if (body != null) 'body': body,
+      if (contentType != null) 'contentType': contentType,
+    });
+
+    // Listen to the EventChannel
+    await for (final event in _streamChannel.receiveBroadcastStream()) {
+      if (event is Map) {
+        final Map<String, dynamic> typedEvent = Map<String, dynamic>.from(event);
+        yield typedEvent;
+        if (typedEvent['type'] == 'done') break;
+      }
+    }
   }
 
   static Future<String> execShell(String command) async {
