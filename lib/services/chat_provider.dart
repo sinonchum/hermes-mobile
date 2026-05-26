@@ -1,15 +1,12 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
-import 'package:flutter/services.dart';
 import '../models/message.dart';
+import 'platform_service.dart';
 
-/// Manages chat state and direct LLM API calls via Android native HTTP.
-/// No Termux/bridge needed — calls Nous/OpenAI API directly through platform channel.
+/// Manages chat state and LLM API calls.
+/// Uses PlatformService for all platform channel communication.
 class ChatProvider extends ChangeNotifier {
-  static const _configChannel = MethodChannel('com.hermes.mobile/config');
-  static const _bridgeChannel = MethodChannel('com.hermes.mobile/bridge');
-
   static const _portalUrl = 'https://portal.nousresearch.com';
   static const _inferenceUrl = 'https://inference-api.nousresearch.com/v1';
 
@@ -95,21 +92,21 @@ When asked what model you are, answer that you are running on $modelName.''';
   Future<void> initialize() async {
     try {
       // Check local LLM first
-      final localUrl = await _configChannel.invokeMethod('getApiKey', {'key': 'local_llm_url'});
-      if (localUrl != null && localUrl.toString().isNotEmpty) {
-        _localLlmUrl = localUrl.toString();
-        _localLlmModel = (await _configChannel.invokeMethod('getApiKey', {'key': 'local_llm_model'}))?.toString();
+      final localUrl = await PlatformService.getApiKey('local_llm_url');
+      if (localUrl != null && localUrl.isNotEmpty) {
+        _localLlmUrl = localUrl;
+        _localLlmModel = await PlatformService.getApiKey('local_llm_model');
         _bridgeState = _bridgeState.copyWith(status: AgentStatus.ready, isBootstrapDone: true);
         notifyListeners();
         return;
       }
 
       // Fall back to cloud API
-      final apiKey = await _configChannel.invokeMethod('getApiKey', {'key': 'nous_api_key'});
-      final model = await _configChannel.invokeMethod('getModel');
-      if (apiKey != null && apiKey.toString().isNotEmpty) {
-        _apiKey = apiKey.toString();
-        _model = model?.toString() ?? _model;
+      final apiKey = await PlatformService.getApiKey('nous_api_key');
+      final model = await PlatformService.getModel();
+      if (apiKey != null && apiKey.isNotEmpty) {
+        _apiKey = apiKey;
+        _model = model ?? _model;
         _bridgeState = _bridgeState.copyWith(status: AgentStatus.ready, isBootstrapDone: true);
       } else {
         _bridgeState = _bridgeState.copyWith(status: AgentStatus.offline);
@@ -124,10 +121,10 @@ When asked what model you are, answer that you are running on $modelName.''';
   Future<void> setLocalModel({required String url, String? model}) async {
     _localLlmUrl = url;
     _localLlmModel = model;
-    _apiKey = null; // Clear cloud key when switching to local
-    await _configChannel.invokeMethod('setApiKey', {'key': 'local_llm_url', 'value': url});
+    _apiKey = null;
+    await PlatformService.setApiKey('local_llm_url', url);
     if (model != null) {
-      await _configChannel.invokeMethod('setApiKey', {'key': 'local_llm_model', 'value': model});
+      await PlatformService.setApiKey('local_llm_model', model);
     }
     _bridgeState = _bridgeState.copyWith(status: AgentStatus.ready, isBootstrapDone: true);
     notifyListeners();
@@ -137,22 +134,22 @@ When asked what model you are, answer that you are running on $modelName.''';
   Future<void> clearLocalModel() async {
     _localLlmUrl = null;
     _localLlmModel = null;
-    await _configChannel.invokeMethod('setApiKey', {'key': 'local_llm_url', 'value': ''});
+    await PlatformService.setApiKey('local_llm_url', '');
     notifyListeners();
-    await initialize(); // Re-check cloud key
+    await initialize();
   }
 
   /// Change model at runtime
   void setModel(String model) {
     _model = model;
-    _configChannel.invokeMethod('setModel', {'model': model});
+    PlatformService.setModel(model);
     notifyListeners();
   }
 
   /// Change API key at runtime
   Future<void> setApiKey(String key) async {
     _apiKey = key;
-    await _configChannel.invokeMethod('setApiKey', {'key': 'nous_api_key', 'value': key});
+    await PlatformService.setApiKey('nous_api_key', key);
     _bridgeState = _bridgeState.copyWith(status: AgentStatus.ready);
     notifyListeners();
   }
@@ -168,7 +165,6 @@ When asked what model you are, answer that you are running on $modelName.''';
     _bridgeState = _bridgeState.copyWith(status: AgentStatus.thinking);
     notifyListeners();
 
-    // Run agent loop in background
     _runAgentLoop(text.trim());
   }
 
@@ -176,7 +172,6 @@ When asked what model you are, answer that you are running on $modelName.''';
   Future<void> _runAgentLoop(String userContent) async {
     final messages = <Map<String, dynamic>>[
       {"role": "system", "content": _systemPrompt},
-      // Include recent history
       ..._messages.take(_messages.length - 1).takeLast(20).map((m) => {
             "role": m.role == 'tool' ? 'assistant' : m.role,
             "content": m.content,
@@ -201,32 +196,27 @@ When asked what model you are, answer that you are running on $modelName.''';
           break;
         }
 
-        final finishReason = choice['finish_reason'];
         final message = choice['message'];
 
         // Check for tool calls
         final toolCalls = message['tool_calls'] as List?;
         if (toolCalls != null && toolCalls.isNotEmpty) {
-          // Add assistant message with tool calls
           messages.add({
             "role": "assistant",
             "content": message['content'],
             "tool_calls": toolCalls,
           });
 
-          // Execute each tool call
           for (final tc in toolCalls) {
             final funcName = tc['function']['name'] as String;
             final funcArgs = tc['function']['arguments'] as String;
 
-            // Show tool call in UI
             _addToolMessage(funcName, 'Running...', 'running');
             notifyListeners();
 
             final args = jsonDecode(funcArgs);
             final toolResult = await _executeTool(funcName, args);
 
-            // Update tool message
             _updateLastToolMessage(funcName, toolResult, 'completed');
 
             messages.add({
@@ -236,7 +226,7 @@ When asked what model you are, answer that you are running on $modelName.''';
             });
           }
           notifyListeners();
-          continue; // Loop for model's response after tool results
+          continue;
         }
 
         // Final response
@@ -256,7 +246,7 @@ When asked what model you are, answer that you are running on $modelName.''';
     notifyListeners();
   }
 
-  /// Call LLM API via Android native HTTP (supports cloud + local)
+  /// Call LLM API via PlatformService
   Future<Map<String, dynamic>> _chatComplete(List<Map<String, dynamic>> messages) async {
     final model = isLocalMode ? (_localLlmModel ?? 'local') : _model;
     final apiUrl = isLocalMode
@@ -273,42 +263,36 @@ When asked what model you are, answer that you are running on $modelName.''';
     try {
       final authHeader = isLocalMode
           ? 'Authorization: Bearer not-needed'
-          : 'Authorization: Bearer $_apiKey';
+          : 'Authorization: Bearer ${_apiKey ?? ''}';
 
-      final result = await _bridgeChannel.invokeMethod('httpPost', {
-        'url': apiUrl,
-        'headers': authHeader,
-        'body': body,
-        'contentType': 'application/json',
-      });
+      final result = await PlatformService.httpPost(
+        apiUrl,
+        headers: authHeader,
+        body: body,
+        contentType: 'application/json',
+      );
 
-      return jsonDecode(result as String) as Map<String, dynamic>;
+      return jsonDecode(result) as Map<String, dynamic>;
     } catch (e) {
       return {'error': 'API call failed: $e'};
     }
   }
 
-  /// Execute tool call on-device via Android native shell
+  /// Execute tool call on-device
   Future<String> _executeTool(String name, Map<String, dynamic> args) async {
     try {
       if (name == 'terminal') {
         final cmd = args['command'] as String? ?? '';
-        final result = await _bridgeChannel.invokeMethod('execShell', {'command': cmd});
-        return (result as String?) ?? '(no output)';
+        return await PlatformService.execShell(cmd);
       }
       if (name == 'read_file') {
         final path = args['path'] as String? ?? '';
-        final result = await _bridgeChannel.invokeMethod('readFile', {'path': path});
-        return (result as String?) ?? 'File not found';
+        return await PlatformService.readFile(path);
       }
       if (name == 'write_file') {
         final path = args['path'] as String? ?? '';
         final content = args['content'] as String? ?? '';
-        final result = await _bridgeChannel.invokeMethod('writeFile', {
-          'path': path,
-          'content': content,
-        });
-        return (result as String?) ?? 'Written';
+        return await PlatformService.writeFile(path, content);
       }
       return 'Unknown tool: $name';
     } catch (e) {
@@ -338,18 +322,12 @@ When asked what model you are, answer that you are running on $modelName.''';
     _messages.clear();
     notifyListeners();
   }
-
-  @override
-  void dispose() {
-    super.dispose();
-  }
 }
 
 /// Extension for takeLast
 extension<T> on Iterable<T> {
   Iterable<T> takeLast(int n) {
     if (length <= n) return this;
-    skip(length - n);
     return skip(length - n);
   }
 }

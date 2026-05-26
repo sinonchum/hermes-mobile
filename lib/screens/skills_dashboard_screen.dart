@@ -1,6 +1,6 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
+import '../services/platform_service.dart';
 
 /// Skills & Memory Dashboard — shows installed skills, memory, and session stats.
 class SkillsDashboardScreen extends StatefulWidget {
@@ -12,8 +12,6 @@ class SkillsDashboardScreen extends StatefulWidget {
 
 class _SkillsDashboardScreenState extends State<SkillsDashboardScreen>
     with SingleTickerProviderStateMixin {
-  static const _bridgeChannel = MethodChannel('com.hermes.mobile/bridge');
-
   late final TabController _tabController;
   List<_SkillEntry> _skills = [];
   String _memory = '';
@@ -51,12 +49,8 @@ class _SkillsDashboardScreenState extends State<SkillsDashboardScreen>
 
   Future<void> _loadHealth() async {
     try {
-      final result = await _bridgeChannel.invokeMethod('httpGet', {
-        'url': 'http://127.0.0.1:18923/api/health',
-      });
-      if (result != null) {
-        _healthInfo = jsonDecode(result as String);
-      }
+      final result = await PlatformService.httpGet('http://127.0.0.1:18923/api/health');
+      _healthInfo = jsonDecode(result);
     } catch (_) {
       _healthInfo = null;
     }
@@ -64,22 +58,15 @@ class _SkillsDashboardScreenState extends State<SkillsDashboardScreen>
 
   Future<void> _loadSkills() async {
     try {
-      // Try bridge API first
-      final result = await _bridgeChannel.invokeMethod('httpGet', {
-        'url': 'http://127.0.0.1:18923/api/chat',
-      });
-      // If bridge is running, use it to get skill list
-      // Otherwise fall back to reading files directly via terminal
-      final termResult = await _bridgeChannel.invokeMethod('execShell', {
-        'command': 'ls -la \$HOME/.hermes/skills/ 2>/dev/null || echo "NO_SKILLS_DIR"',
-      });
+      final termResult = await PlatformService.execShell(
+        'ls -la \$HOME/.hermes/skills/ 2>/dev/null || echo "NO_SKILLS_DIR"',
+      );
 
-      if (termResult != null && !termResult.toString().contains('NO_SKILLS_DIR')) {
-        final lines = termResult.toString().trim().split('\n');
+      if (!termResult.contains('NO_SKILLS_DIR')) {
+        final lines = termResult.trim().split('\n');
         final entries = <_SkillEntry>[];
         for (final line in lines) {
           if (line.startsWith('total') || line.trim().isEmpty) continue;
-          // Parse ls -la output
           final parts = line.split(RegExp(r'\s+'));
           if (parts.length >= 9) {
             final name = parts.sublist(8).join(' ');
@@ -87,19 +74,18 @@ class _SkillsDashboardScreenState extends State<SkillsDashboardScreen>
             final isDir = line.startsWith('d');
             final size = int.tryParse(parts[4]) ?? 0;
 
-            // Try to read description
             String desc = '';
             try {
               if (isDir) {
-                final descResult = await _bridgeChannel.invokeMethod('execShell', {
-                  'command': 'head -5 \$HOME/.hermes/skills/$name/SKILL.md 2>/dev/null | grep -v "^---" | grep -v "^#" | head -1',
-                });
-                desc = descResult?.toString().trim() ?? '';
+                final descResult = await PlatformService.execShell(
+                  'head -5 \$HOME/.hermes/skills/$name/SKILL.md 2>/dev/null | grep -v "^---" | grep -v "^#" | head -1',
+                );
+                desc = descResult.trim();
               } else if (name.endsWith('.md')) {
-                final descResult = await _bridgeChannel.invokeMethod('execShell', {
-                  'command': 'head -5 \$HOME/.hermes/skills/$name 2>/dev/null | grep -v "^---" | grep -v "^#" | head -1',
-                });
-                desc = descResult?.toString().trim() ?? '';
+                final descResult = await PlatformService.execShell(
+                  'head -5 \$HOME/.hermes/skills/$name 2>/dev/null | grep -v "^---" | grep -v "^#" | head -1',
+                );
+                desc = descResult.trim();
               }
             } catch (_) {}
 
@@ -120,22 +106,22 @@ class _SkillsDashboardScreenState extends State<SkillsDashboardScreen>
 
   Future<void> _loadMemory() async {
     try {
-      final result = await _bridgeChannel.invokeMethod('execShell', {
-        'command': 'cat \$HOME/.hermes/memory.md 2>/dev/null || echo "NO_MEMORY"',
-      });
-      if (result != null && !result.toString().contains('NO_MEMORY')) {
-        _memory = result.toString().trim();
+      final result = await PlatformService.execShell(
+        'cat \$HOME/.hermes/memory.md 2>/dev/null || echo "NO_MEMORY"',
+      );
+      if (!result.contains('NO_MEMORY')) {
+        _memory = result.trim();
       }
     } catch (_) {}
   }
 
   Future<void> _viewSkill(String name) async {
     try {
-      final result = await _bridgeChannel.invokeMethod('execShell', {
-        'command': 'cat \$HOME/.hermes/skills/$name 2>/dev/null || cat \$HOME/.hermes/skills/$name/SKILL.md 2>/dev/null || echo "NOT_FOUND"',
-      });
-      if (result != null && mounted) {
-        _showContentDialog(name, result.toString());
+      final result = await PlatformService.execShell(
+        'cat \$HOME/.hermes/skills/$name 2>/dev/null || cat \$HOME/.hermes/skills/$name/SKILL.md 2>/dev/null || echo "NOT_FOUND"',
+      );
+      if (mounted) {
+        _showContentDialog(name, result);
       }
     } catch (e) {
       if (mounted) {
@@ -165,9 +151,7 @@ class _SkillsDashboardScreenState extends State<SkillsDashboardScreen>
     if (confirm != true) return;
 
     try {
-      await _bridgeChannel.invokeMethod('execShell', {
-        'command': 'rm -rf \$HOME/.hermes/skills/$name',
-      });
+      await PlatformService.execShell('rm -rf \$HOME/.hermes/skills/$name');
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('Deleted: $name')),
@@ -217,10 +201,7 @@ class _SkillsDashboardScreenState extends State<SkillsDashboardScreen>
         bottom: TabBar(
           controller: _tabController,
           tabs: [
-            Tab(
-              icon: const Icon(Icons.extension),
-              text: 'Skills (${_skills.length})',
-            ),
+            Tab(icon: const Icon(Icons.extension), text: 'Skills (${_skills.length})'),
             const Tab(icon: Icon(Icons.psychology), text: 'Memory'),
             const Tab(icon: Icon(Icons.info_outline), text: 'Status'),
           ],
@@ -250,20 +231,16 @@ class _SkillsDashboardScreenState extends State<SkillsDashboardScreen>
           children: [
             Icon(Icons.extension_off, size: 64, color: theme.colorScheme.onSurface.withOpacity(0.3)),
             const SizedBox(height: 16),
-            Text(
-              'No skills yet',
-              style: theme.textTheme.titleMedium?.copyWith(
-                color: theme.colorScheme.onSurface.withOpacity(0.5),
-              ),
-            ),
+            Text('No skills yet',
+                style: theme.textTheme.titleMedium?.copyWith(
+                  color: theme.colorScheme.onSurface.withOpacity(0.5),
+                )),
             const SizedBox(height: 8),
-            Text(
-              'Hermes will automatically create skills\nafter complex tasks',
-              textAlign: TextAlign.center,
-              style: theme.textTheme.bodySmall?.copyWith(
-                color: theme.colorScheme.onSurface.withOpacity(0.4),
-              ),
-            ),
+            Text('Hermes will automatically create skills\nafter complex tasks',
+                textAlign: TextAlign.center,
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: theme.colorScheme.onSurface.withOpacity(0.4),
+                )),
           ],
         ),
       );
@@ -281,10 +258,7 @@ class _SkillsDashboardScreenState extends State<SkillsDashboardScreen>
               skill.isDirectory ? Icons.folder : Icons.description,
               color: skill.isDirectory ? Colors.amber : theme.colorScheme.primary,
             ),
-            title: Text(
-              skill.name,
-              style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 14),
-            ),
+            title: Text(skill.name, style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 14)),
             subtitle: skill.description.isNotEmpty
                 ? Text(skill.description, maxLines: 2, overflow: TextOverflow.ellipsis,
                     style: const TextStyle(fontSize: 12))
@@ -319,20 +293,16 @@ class _SkillsDashboardScreenState extends State<SkillsDashboardScreen>
           children: [
             Icon(Icons.memory, size: 64, color: theme.colorScheme.onSurface.withOpacity(0.3)),
             const SizedBox(height: 16),
-            Text(
-              'Memory is empty',
-              style: theme.textTheme.titleMedium?.copyWith(
-                color: theme.colorScheme.onSurface.withOpacity(0.5),
-              ),
-            ),
+            Text('Memory is empty',
+                style: theme.textTheme.titleMedium?.copyWith(
+                  color: theme.colorScheme.onSurface.withOpacity(0.5),
+                )),
             const SizedBox(height: 8),
-            Text(
-              'Hermes will save important facts here\nautomatically as you chat',
-              textAlign: TextAlign.center,
-              style: theme.textTheme.bodySmall?.copyWith(
-                color: theme.colorScheme.onSurface.withOpacity(0.4),
-              ),
-            ),
+            Text('Hermes will save important facts here\nautomatically as you chat',
+                textAlign: TextAlign.center,
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: theme.colorScheme.onSurface.withOpacity(0.4),
+                )),
           ],
         ),
       );

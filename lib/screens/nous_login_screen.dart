@@ -1,8 +1,8 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:url_launcher/url_launcher.dart';
+import '../services/platform_service.dart';
 
 /// Nous Portal OAuth Device Code flow login screen.
 class NousLoginScreen extends StatefulWidget {
@@ -16,9 +16,6 @@ class NousLoginScreen extends StatefulWidget {
 
 class _NousLoginScreenState extends State<NousLoginScreen>
     with WidgetsBindingObserver {
-  static const _configChannel = MethodChannel('com.hermes.mobile/config');
-  static const _bridgeChannel = MethodChannel('com.hermes.mobile/bridge');
-
   static const _portalUrl = 'https://portal.nousresearch.com';
   static const _clientId = 'hermes-cli';
   static const _scope = 'inference:mint_agent_key';
@@ -55,7 +52,6 @@ class _NousLoginScreenState extends State<NousLoginScreen>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    // When user comes back from browser, restart polling if needed
     if (state == AppLifecycleState.resumed &&
         _deviceCode != null &&
         _state == _LoginState.waitingAuth) {
@@ -64,7 +60,7 @@ class _NousLoginScreenState extends State<NousLoginScreen>
     }
   }
 
-  /// Step 1: Request device code via native HTTP
+  /// Step 1: Request device code via PlatformService
   Future<void> _startLogin() async {
     setState(() {
       _state = _LoginState.requesting;
@@ -75,12 +71,12 @@ class _NousLoginScreenState extends State<NousLoginScreen>
     _log('Requesting device code...');
 
     try {
-      final result = await _bridgeChannel.invokeMethod('httpPost', {
-        'url': '$_portalUrl/api/oauth/device/code',
-        'body': 'client_id=$_clientId&scope=$_scope',
-      });
+      final result = await PlatformService.httpPost(
+        '$_portalUrl/api/oauth/device/code',
+        body: 'client_id=$_clientId&scope=$_scope',
+      );
 
-      final data = jsonDecode(result as String);
+      final data = jsonDecode(result);
       _log('Device code received ✓');
 
       _userCode = data['user_code'] as String;
@@ -94,13 +90,8 @@ class _NousLoginScreenState extends State<NousLoginScreen>
         _secondsRemaining = expiresIn;
       });
 
-      // Open browser
       _openBrowser(_verificationUrl!);
-
-      // Start countdown
       _startCountdown(expiresIn);
-
-      // Start polling
       _startPolling();
     } catch (e) {
       _log('Error: $e');
@@ -113,7 +104,7 @@ class _NousLoginScreenState extends State<NousLoginScreen>
 
   void _openBrowser(String url) async {
     try {
-      await _bridgeChannel.invokeMethod('openUrl', {'url': url});
+      await PlatformService.openUrl(url);
     } catch (_) {
       try {
         await launchUrl(Uri.parse(url), mode: LaunchMode.externalApplication);
@@ -144,22 +135,19 @@ class _NousLoginScreenState extends State<NousLoginScreen>
     );
   }
 
-  /// Single poll attempt
   Future<void> _checkTokenOnce() async {
     if (_deviceCode == null || _state != _LoginState.waitingAuth) return;
 
     try {
       _log('Polling token...');
-      final result = await _bridgeChannel.invokeMethod('httpPost', {
-        'url': '$_portalUrl/api/oauth/token',
-        'body':
-            'grant_type=urn:ietf:params:oauth:grant-type:device_code&client_id=$_clientId&device_code=$_deviceCode',
-      });
+      final result = await PlatformService.httpPost(
+        '$_portalUrl/api/oauth/token',
+        body: 'grant_type=urn:ietf:params:oauth:grant-type:device_code'
+            '&client_id=$_clientId&device_code=$_deviceCode',
+      );
 
-      final raw = result as String;
-      final response = jsonDecode(raw);
+      final response = jsonDecode(result);
 
-      // Check if it's a wrapped error response
       if (response is Map && response.containsKey('status_code')) {
         final statusCode = response['status_code'] as int;
         _log('Poll: HTTP $statusCode');
@@ -184,7 +172,6 @@ class _NousLoginScreenState extends State<NousLoginScreen>
         return;
       }
 
-      // Success: has access_token
       if (response is Map && response.containsKey('access_token')) {
         _pollTimer?.cancel();
         final accessToken = response['access_token'] as String;
@@ -201,58 +188,41 @@ class _NousLoginScreenState extends State<NousLoginScreen>
     setState(() => _state = _LoginState.minting);
     _log('Minting agent key...');
 
-    // Wait for network to stabilize after browser redirect
     await Future.delayed(const Duration(seconds: 2));
 
     for (int attempt = 0; attempt < 3; attempt++) {
       try {
-        // Add delay before retry to handle transient DNS issues
         if (attempt > 0) {
           _log('Retry ${attempt + 1}/3 (waiting ${3 * attempt}s)...');
           await Future.delayed(Duration(seconds: 3 * attempt));
         }
 
-        final result = await _bridgeChannel.invokeMethod('httpPost', {
-          'url': '$_portalUrl/api/oauth/agent-key',
-          'headers': 'Authorization: Bearer $accessToken',
-          'body': '{"min_ttl_seconds": 1800}',
-          'contentType': 'application/json',
-        });
+        final result = await PlatformService.httpPost(
+          '$_portalUrl/api/oauth/agent-key',
+          headers: 'Authorization: Bearer $accessToken',
+          body: '{"min_ttl_seconds": 1800}',
+          contentType: 'application/json',
+        );
 
-        final raw = result as String;
-        
-        // Try parsing as wrapped error first
         try {
-          final wrapped = jsonDecode(raw);
+          final wrapped = jsonDecode(result);
           if (wrapped is Map && wrapped.containsKey('status_code')) {
             final code = wrapped['status_code'] as int;
             _log('Mint response: $code (attempt ${attempt + 1})');
             if (code == 429) {
-              // Rate limited — wait and retry
               await Future.delayed(Duration(seconds: 3 * (attempt + 1)));
               continue;
             }
             throw Exception('HTTP $code');
           }
-        } catch (_) {
-          // Not a wrapped error — try parsing as direct success JSON
-        }
+        } catch (_) {}
 
-        // Parse as direct success response
-        final data = jsonDecode(raw);
+        final data = jsonDecode(result);
         final apiKey = data['api_key'] as String;
         _log('Got agent key ✓');
 
-        // Save credentials
-        await _configChannel.invokeMethod('setApiKey', {
-          'key': 'nous_api_key',
-          'value': apiKey,
-        });
-        await _configChannel.invokeMethod('setApiKey', {
-          'key': 'nous_access_token',
-          'value': accessToken,
-        });
-        // Don't set model here — let user choose in ModelSelectScreen
+        await PlatformService.setApiKey('nous_api_key', apiKey);
+        await PlatformService.setApiKey('nous_access_token', accessToken);
         _log('Credentials saved ✓');
 
         if (mounted) {
@@ -260,7 +230,7 @@ class _NousLoginScreenState extends State<NousLoginScreen>
           await Future.delayed(const Duration(milliseconds: 800));
           if (mounted) widget.onLoginSuccess();
         }
-        return; // Done!
+        return;
       } catch (e) {
         _log('Mint error (attempt ${attempt + 1}): $e');
         if (attempt == 2) {
@@ -417,7 +387,6 @@ class _NousLoginScreenState extends State<NousLoginScreen>
             icon: const Icon(Icons.open_in_browser),
             label: const Text('Open Browser Again'),
           ),
-          // Debug log (small, at bottom)
           if (_debugLog.isNotEmpty)
             Padding(
               padding: const EdgeInsets.only(top: 16),
@@ -469,7 +438,6 @@ class _NousLoginScreenState extends State<NousLoginScreen>
       Text(_errorMessage ?? 'Unknown error',
           style: TextStyle(color: theme.colorScheme.onSurface.withOpacity(0.6)),
           textAlign: TextAlign.center),
-      // Show debug log
       if (_debugLog.isNotEmpty)
         Padding(
           padding: const EdgeInsets.all(16),
@@ -509,10 +477,7 @@ class _NousLoginScreenState extends State<NousLoginScreen>
             onPressed: () async {
               final key = controller.text.trim();
               if (key.isNotEmpty) {
-                await _configChannel.invokeMethod('setApiKey', {
-                  'key': 'nous_api_key',
-                  'value': key,
-                });
+                await PlatformService.setApiKey('nous_api_key', key);
                 if (ctx.mounted) Navigator.pop(ctx);
                 if (mounted) widget.onLoginSuccess();
               }

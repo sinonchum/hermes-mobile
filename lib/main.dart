@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
-import 'package:provider/provider.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:provider/provider.dart';
 import 'services/chat_provider.dart';
+import 'services/platform_service.dart';
 import 'screens/chat_screen.dart';
 import 'screens/nous_login_screen.dart';
 import 'screens/model_select_screen.dart';
@@ -20,8 +20,6 @@ class HermesMobileApp extends StatefulWidget {
 }
 
 class _HermesMobileAppState extends State<HermesMobileApp> {
-  static const _configChannel = MethodChannel('com.hermes.mobile/config');
-
   bool _hasApiKey = false;
   bool _hasModel = false;
   bool _checking = true;
@@ -34,13 +32,13 @@ class _HermesMobileAppState extends State<HermesMobileApp> {
 
   Future<void> _checkConfig() async {
     try {
-      final hasKey = await _configChannel.invokeMethod('hasAnyApiKey');
-      final model = await _configChannel.invokeMethod('getModel');
-      final localUrl = await _configChannel.invokeMethod('getApiKey', {'key': 'local_llm_url'});
+      final hasKey = await PlatformService.hasAnyApiKey();
+      final model = await PlatformService.getModel();
+      final localUrl = await PlatformService.getApiKey('local_llm_url');
       setState(() {
-        _hasApiKey = hasKey == true || (localUrl != null && localUrl.toString().isNotEmpty);
-        _hasModel = model != null && model.toString().isNotEmpty ||
-                    (localUrl != null && localUrl.toString().isNotEmpty);
+        _hasApiKey = hasKey || (localUrl != null && localUrl.isNotEmpty);
+        _hasModel = (model != null && model.isNotEmpty) ||
+                    (localUrl != null && localUrl.isNotEmpty);
         _checking = false;
       });
     } catch (_) {
@@ -48,11 +46,9 @@ class _HermesMobileAppState extends State<HermesMobileApp> {
     }
   }
 
-  /// Returns the appropriate screen based on setup state.
   Widget _getHomeScreen() {
     if (!_hasApiKey) {
       return NousLoginScreen(onLoginSuccess: () {
-        // After OAuth, go to model selection (not directly to chat)
         setState(() {
           _hasApiKey = true;
           _hasModel = false;
@@ -90,7 +86,7 @@ class _HermesMobileAppState extends State<HermesMobileApp> {
     final isDark = brightness == Brightness.dark;
 
     final colorScheme = ColorScheme.fromSeed(
-      seedColor: const Color(0xFFD4A843), // Hermes gold
+      seedColor: const Color(0xFFD4A843),
       brightness: brightness,
     );
 

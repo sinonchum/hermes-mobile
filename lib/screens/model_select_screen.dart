@@ -1,6 +1,6 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
+import '../services/platform_service.dart';
 
 /// Model selection screen — search + select from API model list.
 class ModelSelectScreen extends StatefulWidget {
@@ -13,8 +13,6 @@ class ModelSelectScreen extends StatefulWidget {
 }
 
 class _ModelSelectScreenState extends State<ModelSelectScreen> {
-  static const _configChannel = MethodChannel('com.hermes.mobile/config');
-  static const _bridgeChannel = MethodChannel('com.hermes.mobile/bridge');
   static const _inferenceUrl = 'https://inference-api.nousresearch.com/v1';
 
   List<String> _models = [];
@@ -57,36 +55,31 @@ class _ModelSelectScreenState extends State<ModelSelectScreen> {
 
     List<String> models = [];
 
-    // ── Try local model discovery first ──
+    // Try local model discovery first
     try {
-      final localResult = await _bridgeChannel.invokeMethod('httpGet', {
-        'url': 'http://127.0.0.1:18923/api/local/discover',
-      });
-      if (localResult != null) {
-        final localData = jsonDecode(localResult as String);
-        final servers = localData['servers'] as List? ?? [];
-        for (final server in servers) {
-          final name = server['name'] as String? ?? 'Unknown';
-          final serverModels = server['models'] as List? ?? [];
-          for (final m in serverModels) {
-            models.add('📱 $m ($name)');
-          }
+      final localResult = await PlatformService.httpGet(
+        'http://127.0.0.1:18923/api/local/discover',
+      );
+      final localData = jsonDecode(localResult);
+      final servers = localData['servers'] as List? ?? [];
+      for (final server in servers) {
+        final name = server['name'] as String? ?? 'Unknown';
+        final serverModels = server['models'] as List? ?? [];
+        for (final m in serverModels) {
+          models.add('📱 $m ($name)');
         }
       }
-    } catch (_) {
-      // Bridge not running or no local servers — that's fine
-    }
+    } catch (_) {}
 
-    // ── Fetch cloud models ──
+    // Fetch cloud models
     try {
-      final apiKey = await _configChannel.invokeMethod('getApiKey', {'key': 'nous_api_key'});
-      if (apiKey != null && apiKey.toString().isNotEmpty) {
-        final result = await _bridgeChannel.invokeMethod('httpGet', {
-          'url': '$_inferenceUrl/models',
-          'headers': 'Authorization: Bearer $apiKey'
-        });
+      final apiKey = await PlatformService.getApiKey('nous_api_key');
+      if (apiKey != null && apiKey.isNotEmpty) {
+        final result = await PlatformService.httpGet(
+          '$_inferenceUrl/models',
+          headers: 'Authorization: Bearer ***        );
 
-        final data = jsonDecode(result as String);
+        final data = jsonDecode(result);
         if (data is Map && data.containsKey('data')) {
           for (final m in data['data']) {
             final id = m['id'] as String?;
@@ -98,7 +91,6 @@ class _ModelSelectScreenState extends State<ModelSelectScreen> {
       }
     } catch (e) {
       if (models.isEmpty) {
-        // No local servers, no cloud key — show fallback
         models.addAll([
           'gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo',
           'nousresearch/hermes-3-llama-3.1-405b',
@@ -109,7 +101,6 @@ class _ModelSelectScreenState extends State<ModelSelectScreen> {
     }
 
     models.sort((a, b) {
-      // Local models first
       if (a.startsWith('📱') && !b.startsWith('📱')) return -1;
       if (!a.startsWith('📱') && b.startsWith('📱')) return 1;
       final ap = _priority(a), bp = _priority(b);
@@ -174,8 +165,6 @@ class _ModelSelectScreenState extends State<ModelSelectScreen> {
                   ),
                 ),
               ),
-
-              // Count + error
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 4),
                 child: Row(
@@ -191,8 +180,6 @@ class _ModelSelectScreenState extends State<ModelSelectScreen> {
                   ],
                 ),
               ),
-
-              // Model list
               Expanded(
                 child: _filteredModels.isEmpty
                     ? Center(
@@ -236,8 +223,6 @@ class _ModelSelectScreenState extends State<ModelSelectScreen> {
                         },
                       ),
               ),
-
-              // Continue
               Padding(
                 padding: const EdgeInsets.all(20),
                 child: SizedBox(
@@ -247,26 +232,17 @@ class _ModelSelectScreenState extends State<ModelSelectScreen> {
                         ? () async {
                             final sel = _selected!;
                             if (sel.startsWith('📱')) {
-                              // Local model — extract model name and server
-                              // Format: "📱 model-name (ServerName)"
                               final match = RegExp(r'^📱 (.+?) \((.+)\)$').firstMatch(sel);
                               if (match != null) {
                                 final modelName = match.group(1)!;
                                 final serverName = match.group(2)!;
                                 final url = _localServerUrl(serverName);
-                                await _configChannel.invokeMethod('setApiKey', {
-                                  'key': 'local_llm_url', 'value': url,
-                                });
-                                await _configChannel.invokeMethod('setApiKey', {
-                                  'key': 'local_llm_model', 'value': modelName,
-                                });
+                                await PlatformService.setApiKey('local_llm_url', url);
+                                await PlatformService.setApiKey('local_llm_model', modelName);
                               }
                             } else {
-                              // Cloud model
-                              await _configChannel.invokeMethod('setApiKey', {
-                                'key': 'local_llm_url', 'value': '',
-                              });
-                              await _configChannel.invokeMethod('setModel', {'model': sel});
+                              await PlatformService.setApiKey('local_llm_url', '');
+                              await PlatformService.setModel(sel);
                             }
                             if (context.mounted) widget.onContinue();
                           }

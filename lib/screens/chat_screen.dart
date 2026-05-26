@@ -1,9 +1,9 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import '../models/message.dart';
 import '../services/chat_provider.dart';
+import '../services/platform_service.dart';
 import '../widgets/message_bubble.dart';
 import '../widgets/status_bar.dart';
 import 'skills_dashboard_screen.dart';
@@ -24,7 +24,6 @@ class _ChatScreenState extends State<ChatScreen> {
   @override
   void initState() {
     super.initState();
-    // Initialize provider after first frame
     WidgetsBinding.instance.addPostFrameCallback((_) {
       context.read<ChatProvider>().initialize();
     });
@@ -46,7 +45,6 @@ class _ChatScreenState extends State<ChatScreen> {
     _textController.clear();
     _focusNode.requestFocus();
 
-    // Auto-scroll to bottom
     Future.delayed(const Duration(milliseconds: 100), _scrollToBottom);
   }
 
@@ -63,7 +61,6 @@ class _ChatScreenState extends State<ChatScreen> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final isDark = theme.brightness == Brightness.dark;
 
     return Scaffold(
       appBar: AppBar(
@@ -118,10 +115,7 @@ class _ChatScreenState extends State<ChatScreen> {
       ),
       body: Column(
         children: [
-          // Connection status bar
           const StatusBar(),
-
-          // Chat messages
           Expanded(
             child: Consumer<ChatProvider>(
               builder: (context, provider, _) {
@@ -140,8 +134,6 @@ class _ChatScreenState extends State<ChatScreen> {
               },
             ),
           ),
-
-          // Input area
           _InputBar(
             controller: _textController,
             focusNode: _focusNode,
@@ -157,7 +149,6 @@ class _ChatScreenState extends State<ChatScreen> {
     _sendMessage();
   }
 
-  /// Bottom sheet to change model
   void _showModelSheet(BuildContext context) {
     showModalBottomSheet(
       context: context,
@@ -216,16 +207,13 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Future<List<String>> _fetchModelList() async {
-    const platform = MethodChannel('com.hermes.mobile/config');
-    const bridge = MethodChannel('com.hermes.mobile/bridge');
     try {
-      final apiKey = await platform.invokeMethod('getApiKey', {'key': 'nous_api_key'});
+      final apiKey = await PlatformService.getApiKey('nous_api_key');
       if (apiKey == null) return [];
-      final result = await bridge.invokeMethod('httpGet', {
-        'url': 'https://inference-api.nousresearch.com/v1/models',
-        'headers': 'Authorization: Bearer $apiKey',
-      });
-      final data = jsonDecode(result as String);
+      final result = await PlatformService.httpGet(
+        'https://inference-api.nousresearch.com/v1/models',
+        headers: 'Authorization: Bearer ***      );
+      final data = jsonDecode(result);
       final models = <String>[];
       if (data is Map && data.containsKey('data')) {
         for (final m in data['data']) {
@@ -239,7 +227,6 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
-  /// Bottom sheet to change API key
   void _showApiSheet(BuildContext context) {
     final controller = TextEditingController();
     showModalBottomSheet(
@@ -266,8 +253,7 @@ class _ChatScreenState extends State<ChatScreen> {
               onPressed: () async {
                 final key = controller.text.trim();
                 if (key.isNotEmpty) {
-                  const platform = MethodChannel('com.hermes.mobile/config');
-                  await platform.invokeMethod('setApiKey', {'key': 'nous_api_key', 'value': key});
+                  await PlatformService.setApiKey('nous_api_key', key);
                   context.read<ChatProvider>().initialize();
                   if (ctx.mounted) Navigator.pop(ctx);
                   ScaffoldMessenger.of(context).showSnackBar(
@@ -280,10 +266,7 @@ class _ChatScreenState extends State<ChatScreen> {
             ),
             const SizedBox(height: 8),
             TextButton(
-              onPressed: () {
-                // Go back to full re-login
-                Navigator.pop(ctx);
-              },
+              onPressed: () => Navigator.pop(ctx),
               child: const Text('Sign in with Nous Portal instead'),
             ),
           ],
@@ -293,7 +276,6 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 }
 
-/// Empty state with quick-start suggestions.
 class _EmptyState extends StatelessWidget {
   final ValueChanged<String> onSuggestion;
 
@@ -316,25 +298,16 @@ class _EmptyState extends StatelessWidget {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Icon(
-              Icons.auto_awesome,
-              size: 64,
-              color: theme.colorScheme.primary.withOpacity(0.5),
-            ),
+            Icon(Icons.auto_awesome, size: 64,
+                color: theme.colorScheme.primary.withOpacity(0.5)),
             const SizedBox(height: 16),
-            Text(
-              'Hermes Agent',
-              style: theme.textTheme.headlineSmall?.copyWith(
-                fontWeight: FontWeight.bold,
-              ),
-            ),
+            Text('Hermes Agent',
+                style: theme.textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.bold)),
             const SizedBox(height: 8),
-            Text(
-              'Your AI assistant with full tool access',
-              style: theme.textTheme.bodyMedium?.copyWith(
-                color: theme.colorScheme.onSurface.withOpacity(0.6),
-              ),
-            ),
+            Text('Your AI assistant with full tool access',
+                style: theme.textTheme.bodyMedium?.copyWith(
+                  color: theme.colorScheme.onSurface.withOpacity(0.6),
+                )),
             const SizedBox(height: 32),
             ...suggestions.map((s) => Padding(
               padding: const EdgeInsets.symmetric(vertical: 4),
@@ -350,7 +323,6 @@ class _EmptyState extends StatelessWidget {
   }
 }
 
-/// Text input bar with send button.
 class _InputBar extends StatelessWidget {
   final TextEditingController controller;
   final FocusNode focusNode;
@@ -368,7 +340,7 @@ class _InputBar extends StatelessWidget {
     final isDark = theme.brightness == Brightness.dark;
 
     return Container(
-      padding: const EdgeInsets.fromLTRB(8, 8, 8, 8 + 16), // Bottom safe area
+      padding: const EdgeInsets.fromLTRB(8, 8, 8, 8 + 16),
       decoration: BoxDecoration(
         color: isDark ? const Color(0xFF1E1E2E) : Colors.white,
         boxShadow: [
@@ -399,10 +371,7 @@ class _InputBar extends StatelessWidget {
                   decoration: InputDecoration(
                     hintText: 'Message Hermes...',
                     border: InputBorder.none,
-                    contentPadding: const EdgeInsets.symmetric(
-                      horizontal: 16,
-                      vertical: 10,
-                    ),
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
                     hintStyle: TextStyle(
                       color: theme.colorScheme.onSurface.withOpacity(0.4),
                     ),
