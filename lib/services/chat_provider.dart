@@ -3,9 +3,11 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import '../models/message.dart';
 import 'platform_service.dart';
+import 'message_repository.dart';
 
 /// Manages chat state and LLM API calls.
 /// Uses PlatformService for all platform channel communication.
+/// Persists messages via MessageRepository (SQLite).
 class ChatProvider extends ChangeNotifier {
   static const _portalUrl = 'https://portal.nousresearch.com';
   static const _inferenceUrl = 'https://inference-api.nousresearch.com/v1';
@@ -16,6 +18,9 @@ class ChatProvider extends ChangeNotifier {
   String _model = 'nousresearch/hermes-3-llama-3.1-405b';
   bool _isProcessing = false;
 
+  // Session management
+  String? _currentSessionId;
+
   // Local LLM settings
   String? _localLlmUrl;
   String? _localLlmModel;
@@ -23,6 +28,7 @@ class ChatProvider extends ChangeNotifier {
   String? get localLlmModel => _localLlmModel;
   String get currentModel => _model;
   bool get isLocalMode => _localLlmUrl != null && _localLlmUrl!.isNotEmpty;
+  String? get currentSessionId => _currentSessionId;
 
   List<ChatMessage> get messages => List.unmodifiable(_messages);
   BridgeState get bridgeState => _bridgeState;
@@ -117,6 +123,38 @@ When asked what model you are, answer that you are running on $modelName.''';
     notifyListeners();
   }
 
+  // ── Session Management ──
+
+  /// Start a new session.
+  Future<void> startNewSession({String? title}) async {
+    _currentSessionId = await MessageRepository.createSession(title: title);
+    _messages.clear();
+    notifyListeners();
+  }
+
+  /// Load an existing session.
+  Future<void> loadSession(String sessionId) async {
+    _currentSessionId = sessionId;
+    _messages.clear();
+    _messages.addAll(await MessageRepository.getMessages(sessionId));
+    notifyListeners();
+  }
+
+  /// Get all sessions.
+  Future<List<Map<String, dynamic>>> getSessions() async {
+    return MessageRepository.getSessions();
+  }
+
+  /// Delete a session.
+  Future<void> deleteSession(String sessionId) async {
+    await MessageRepository.deleteSession(sessionId);
+    if (_currentSessionId == sessionId) {
+      _currentSessionId = null;
+      _messages.clear();
+      notifyListeners();
+    }
+  }
+
   /// Configure local LLM mode
   Future<void> setLocalModel({required String url, String? model}) async {
     _localLlmUrl = url;
@@ -159,11 +197,19 @@ When asked what model you are, answer that you are running on $modelName.''';
     if (text.trim().isEmpty) return;
     if (!isConnected) return;
 
+    // Auto-create session if needed
+    if (_currentSessionId == null) {
+      startNewSession(title: text.trim().length > 50 ? '${text.trim().substring(0, 50)}...' : text.trim());
+    }
+
     final userMsg = ChatMessage.user(text.trim());
     _messages.add(userMsg);
     _isProcessing = true;
     _bridgeState = _bridgeState.copyWith(status: AgentStatus.thinking);
     notifyListeners();
+
+    // Persist user message
+    MessageRepository.saveMessage(_currentSessionId!, userMsg);
 
     _runAgentLoop(text.trim());
   }
@@ -198,7 +244,6 @@ When asked what model you are, answer that you are running on $modelName.''';
 
         final message = choice['message'];
 
-        // Check for tool calls
         final toolCalls = message['tool_calls'] as List?;
         if (toolCalls != null && toolCalls.isNotEmpty) {
           messages.add({
@@ -211,8 +256,7 @@ When asked what model you are, answer that you are running on $modelName.''';
             final funcName = tc['function']['name'] as String;
             final funcArgs = tc['function']['arguments'] as String;
 
-            _addToolMessage(funcName, 'Running...', 'running');
-            notifyListeners();
+            final toolMsg = _addToolMessage(funcName, 'Running...', 'running');
 
             final args = jsonDecode(funcArgs);
             final toolResult = await _executeTool(funcName, args);
@@ -229,7 +273,6 @@ When asked what model you are, answer that you are running on $modelName.''';
           continue;
         }
 
-        // Final response
         final content = message['content'] as String? ?? '';
         if (content.isNotEmpty) {
           _addAssistantMessage(content);
@@ -262,8 +305,7 @@ When asked what model you are, answer that you are running on $modelName.''';
 
     try {
       final authHeader = isLocalMode
-          ? 'Authorization: Bearer not-needed'
-          : 'Authorization: Bearer ${_apiKey ?? ''}';
+          ? 'Authorization: Bearer ***          : 'Authorization: Bearer *** ?? ''}';
 
       final result = await PlatformService.httpPost(
         apiUrl,
@@ -301,12 +343,21 @@ When asked what model you are, answer that you are running on $modelName.''';
   }
 
   void _addAssistantMessage(String content) {
-    _messages.add(ChatMessage.assistant(content));
+    final msg = ChatMessage.assistant(content);
+    _messages.add(msg);
+    if (_currentSessionId != null) {
+      MessageRepository.saveMessage(_currentSessionId!, msg);
+    }
     notifyListeners();
   }
 
-  void _addToolMessage(String toolName, String content, String status) {
-    _messages.add(ChatMessage.tool(toolName: toolName, content: content, status: status));
+  ChatMessage _addToolMessage(String toolName, String content, String status) {
+    final msg = ChatMessage.tool(toolName: toolName, content: content, status: status);
+    _messages.add(msg);
+    if (_currentSessionId != null) {
+      MessageRepository.saveMessage(_currentSessionId!, msg);
+    }
+    return msg;
   }
 
   void _updateLastToolMessage(String toolName, String content, String status) {
@@ -315,11 +366,17 @@ When asked what model you are, answer that you are running on $modelName.''';
     );
     if (idx >= 0) {
       _messages[idx] = _messages[idx].copyWith(content: content, toolStatus: status);
+      if (_currentSessionId != null) {
+        MessageRepository.saveMessage(_currentSessionId!, _messages[idx]);
+      }
     }
   }
 
   void clearMessages() {
     _messages.clear();
+    if (_currentSessionId != null) {
+      MessageRepository.clearSession(_currentSessionId!);
+    }
     notifyListeners();
   }
 }
