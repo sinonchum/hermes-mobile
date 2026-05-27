@@ -1,30 +1,92 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 import '../models/message.dart';
+
+/// Callback for message actions (retry, delete, etc.)
+typedef MessageActionCallback = void Function(String action, ChatMessage message);
 
 /// Renders a single chat message with role-appropriate styling.
 class MessageBubble extends StatelessWidget {
   final ChatMessage message;
+  final MessageActionCallback? onAction;
 
-  const MessageBubble({super.key, required this.message});
+  const MessageBubble({super.key, required this.message, this.onAction});
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final isDark = theme.brightness == Brightness.dark;
 
+    Widget bubble;
     switch (message.role) {
       case 'user':
-        return _UserBubble(message: message, isDark: isDark);
+        bubble = _UserBubble(message: message, isDark: isDark);
+        break;
       case 'assistant':
-        return _AssistantBubble(message: message, isDark: isDark, theme: theme);
+        bubble = _AssistantBubble(message: message, isDark: isDark, theme: theme);
+        break;
       case 'tool':
-        return _ToolBubble(message: message, isDark: isDark, theme: theme);
+        bubble = _ToolBubble(message: message, isDark: isDark, theme: theme);
+        break;
       case 'system':
-        return _SystemBubble(message: message, theme: theme);
+        bubble = _SystemBubble(message: message, theme: theme);
+        break;
       default:
-        return const SizedBox.shrink();
+        bubble = const SizedBox.shrink();
     }
+
+    // Wrap with long-press menu for user and assistant messages
+    if (message.role == 'user' || message.role == 'assistant') {
+      return GestureDetector(
+        onLongPress: () => _showContextMenu(context),
+        child: bubble,
+      );
+    }
+
+    return bubble;
+  }
+
+  void _showContextMenu(BuildContext context) {
+    showModalBottomSheet(
+      context: context,
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.copy),
+              title: const Text('Copy'),
+              onTap: () {
+                Clipboard.setData(ClipboardData(text: message.content));
+                Navigator.pop(ctx);
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('Copied to clipboard'), duration: Duration(seconds: 1)),
+                );
+              },
+            ),
+            if (message.role == 'assistant') ...[
+              ListTile(
+                leading: const Icon(Icons.refresh),
+                title: const Text('Retry'),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  onAction?.call('retry', message);
+                },
+              ),
+            ],
+            ListTile(
+              leading: const Icon(Icons.delete_outline, color: Colors.red),
+              title: const Text('Delete', style: TextStyle(color: Colors.red)),
+              onTap: () {
+                Navigator.pop(ctx);
+                onAction?.call('delete', message);
+              },
+            ),
+          ],
+        ),
+      ),
+    );
   }
 }
 
@@ -103,21 +165,49 @@ class _AssistantBubble extends StatelessWidget {
                   p: TextStyle(
                     color: isDark ? Colors.white : Colors.black87,
                     fontSize: 15,
+                    height: 1.5,
                   ),
                   code: TextStyle(
                     backgroundColor: isDark
-                        ? Colors.grey[800]
-                        : Colors.grey[200],
-                    fontFamily: 'monospace',
+                        ? const Color(0xFF1E1E2E)
+                        : const Color(0xFFF5F5F5),
+                    color: isDark ? const Color(0xFFE06C75) : const Color(0xFFC7254E),
+                    fontFamily: 'JetBrains Mono, monospace',
                     fontSize: 13,
                   ),
                   codeblockDecoration: BoxDecoration(
-                    color: isDark ? Colors.grey[900] : Colors.grey[100],
+                    color: isDark
+                        ? const Color(0xFF1E1E2E)
+                        : const Color(0xFFF8F8F8),
                     borderRadius: BorderRadius.circular(8),
+                    border: Border.all(
+                      color: isDark
+                          ? Colors.white.withOpacity(0.1)
+                          : Colors.black.withOpacity(0.1),
+                    ),
                   ),
+                  codeblockPadding: const EdgeInsets.all(12),
                   blockquote: TextStyle(
                     color: isDark ? Colors.grey[400] : Colors.grey[600],
                     fontStyle: FontStyle.italic,
+                  ),
+                  h1: TextStyle(
+                    color: isDark ? Colors.white : Colors.black87,
+                    fontSize: 20,
+                    fontWeight: FontWeight.bold,
+                  ),
+                  h2: TextStyle(
+                    color: isDark ? Colors.white : Colors.black87,
+                    fontSize: 18,
+                    fontWeight: FontWeight.bold,
+                  ),
+                  h3: TextStyle(
+                    color: isDark ? Colors.white : Colors.black87,
+                    fontSize: 16,
+                    fontWeight: FontWeight.bold,
+                  ),
+                  listBullet: TextStyle(
+                    color: isDark ? Colors.white70 : Colors.black54,
                   ),
                 ),
               ),
@@ -162,7 +252,7 @@ class _ToolBubble extends StatelessWidget {
       child: Row(
         children: [
           if (isRunning)
-            SizedBox(
+            const SizedBox(
               width: 16,
               height: 16,
               child: CircularProgressIndicator(

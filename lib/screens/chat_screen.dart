@@ -128,7 +128,10 @@ class _ChatScreenState extends State<ChatScreen> {
                   padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                   itemCount: provider.messages.length,
                   itemBuilder: (context, index) {
-                    return MessageBubble(message: provider.messages[index]);
+                    return MessageBubble(
+                      message: provider.messages[index],
+                      onAction: (action, msg) => _handleMessageAction(action, msg, provider),
+                    );
                   },
                 );
               },
@@ -147,6 +150,29 @@ class _ChatScreenState extends State<ChatScreen> {
   void _onSuggestionTap(String text) {
     _textController.text = text;
     _sendMessage();
+  }
+
+  void _handleMessageAction(String action, ChatMessage message, ChatProvider provider) {
+    switch (action) {
+      case 'retry':
+        // Find the user message before this assistant message
+        final messages = provider.messages;
+        final idx = messages.indexOf(message);
+        if (idx > 0) {
+          final userMsg = messages[idx - 1];
+          if (userMsg.role == 'user') {
+            _textController.text = userMsg.content;
+            _sendMessage();
+          }
+        }
+        break;
+      case 'delete':
+        // TODO: Implement message deletion
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Delete not yet implemented')),
+        );
+        break;
+    }
   }
 
   void _showModelSheet(BuildContext context) {
