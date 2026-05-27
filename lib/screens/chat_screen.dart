@@ -222,7 +222,8 @@ class _ChatScreenState extends State<ChatScreen> {
         }
       }
       return models..sort();
-    } catch (_) {
+    } catch (e) {
+      debugPrint('[ChatScreen] Failed to fetch models: $e');
       return ['gpt-4o', 'gpt-4o-mini', 'nousresearch/hermes-3-llama-3.1-405b'];
     }
   }

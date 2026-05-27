@@ -51,7 +51,8 @@ class _SkillsDashboardScreenState extends State<SkillsDashboardScreen>
     try {
       final result = await PlatformService.httpGet('http://127.0.0.1:18923/api/health');
       _healthInfo = jsonDecode(result);
-    } catch (_) {
+    } catch (e) {
+      debugPrint('[Skills] Health check failed: $e');
       _healthInfo = null;
     }
   }
@@ -87,7 +88,9 @@ class _SkillsDashboardScreenState extends State<SkillsDashboardScreen>
                 );
                 desc = descResult.trim();
               }
-            } catch (_) {}
+            } catch (e) {
+              debugPrint('[Skills] Description parse failed: $e');
+            }
 
             entries.add(_SkillEntry(
               name: name,
@@ -112,7 +115,9 @@ class _SkillsDashboardScreenState extends State<SkillsDashboardScreen>
       if (!result.contains('NO_MEMORY')) {
         _memory = result.trim();
       }
-    } catch (_) {}
+    } catch (e) {
+      debugPrint('[Skills] Load error: $e');
+    }
   }
 
   Future<void> _viewSkill(String name) async {

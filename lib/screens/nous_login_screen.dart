@@ -106,9 +106,8 @@ class _NousLoginScreenState extends State<NousLoginScreen>
     try {
       await PlatformService.openUrl(url);
     } catch (_) {
-      try {
-        await launchUrl(Uri.parse(url), mode: LaunchMode.externalApplication);
       } catch (e) {
+        debugPrint('[Login] Browser open failed: $e');
         _log('Browser open failed: $e');
       }
     }
@@ -179,7 +178,8 @@ class _NousLoginScreenState extends State<NousLoginScreen>
         await _mintAgentKey(accessToken);
       }
     } catch (e) {
-      _log('Poll error: $e');
+      debugPrint('[Login] Init failed: $e');
+      _bridgeState = _bridgeState.copyWith(status: AgentStatus.offline);
     }
   }
 
@@ -215,7 +215,9 @@ class _NousLoginScreenState extends State<NousLoginScreen>
             }
             throw Exception('HTTP $code');
           }
-        } catch (_) {}
+        } catch (e) {
+          debugPrint('[Login] Mint wrapped error: $e');
+        }
 
         final data = jsonDecode(result);
         final apiKey = data['api_key'] as String;

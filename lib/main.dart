@@ -41,7 +41,8 @@ class _HermesMobileAppState extends State<HermesMobileApp> {
                     (localUrl != null && localUrl.isNotEmpty);
         _checking = false;
       });
-    } catch (_) {
+    } catch (e) {
+      debugPrint('[Config] Failed to check config: $e');
       setState(() => _checking = false);
     }
   }

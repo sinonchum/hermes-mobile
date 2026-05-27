@@ -69,7 +69,9 @@ class _ModelSelectScreenState extends State<ModelSelectScreen> {
           models.add('📱 $m ($name)');
         }
       }
-    } catch (_) {}
+    } catch (e) {
+      debugPrint('[ModelSelect] Discovery error: $e');
+    }
 
     // Fetch cloud models
     try {

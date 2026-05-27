@@ -115,7 +115,8 @@ When asked what model you are, answer that you are running on $modelName.''';
       } else {
         _bridgeState = _bridgeState.copyWith(status: AgentStatus.offline);
       }
-    } catch (_) {
+    } catch (e) {
+      debugPrint('[ChatProvider] Initialize failed: $e');
       _bridgeState = _bridgeState.copyWith(status: AgentStatus.offline);
     }
     notifyListeners();
@@ -360,8 +361,8 @@ When asked what model you are, answer that you are running on $modelName.''';
                 }
               }
             }
-          } catch (_) {
-            // Ignore parse errors in streaming chunks
+          } catch (e) {
+            debugPrint('[ChatProvider] SSE parse error: $e');
           }
         } else if (event['type'] == 'done') {
           break;
